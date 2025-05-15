@@ -4,7 +4,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 import pandas
 import pathlib
 from typing import Any
-from irpf_report.holdings import Holding
+from irpf_report.investments import Investment
 
 
 FORMAT_CURRENCY_REAL_SIMPLE = "[$R$ ]#,##0.00_-"
@@ -18,20 +18,20 @@ class AssetsReport:
         """
         self.path = file_path
 
-    def generate_report(self, holdings: Iterable[Holding]) -> None:
-        data = [self._format_holding(holding) for holding in holdings]
+    def generate_report(self, holdings: Iterable[Investment]) -> None:
+        data = [self._format_investment(holding) for holding in holdings]
         dataframe = pandas.DataFrame(data)
         with pandas.ExcelWriter(self.path) as xls:
             dataframe.to_excel(xls, sheet_name="Bens e Direitos", header=True, index=False, float_format="%.2f")
             self._format_report(xls.sheets["Bens e Direitos"])
 
-    def _format_holding(self, holding: Holding) -> dict[str, Any]:
+    def _format_investment(self, holding: Investment) -> dict[str, Any]:
         asset = holding.asset
         return {
             "Grupo": asset.get_group(),
             "Código": asset.get_code(),
             "CNPJ": asset.get_cnpj(),
-            "Descrição": self._format_asset_description(holding),
+            "Descrição": self._format_investment_description(holding),
             "Código de Negociação": asset.get_ticker(),
             "Situação no ano anterior": float(holding.previous_invested_amount),
             "Situação atual": float(holding.current_invested_amount),
@@ -39,7 +39,7 @@ class AssetsReport:
         }
 
     @staticmethod
-    def _format_asset_description(holding: Holding) -> str:
+    def _format_investment_description(holding: Investment) -> str:
         asset = holding.asset
         description = asset.get_description_fmt() % holding.current_quantity
 

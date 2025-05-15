@@ -22,7 +22,9 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "openpyxl-stubs>=0.1.25",
     "pandas-stubs>=2.2.3.250308",
+    "types-openpyxl>=3.1.5.20250506",
 ]
 
 [tool.black]

@@ -1,8 +1,12 @@
+import datetime
 import click
 import pathlib
-from irpf_report.parsers import PositionReportParser
+
 from irpf_report.inventory import Inventory
-from irpf_report.reports import AssetsReport
+from irpf_report.parsers import ExcelParser, PositionReportParser, TransactionsReportParser
+from irpf_report.reports import IRPFReport
+
+last_calendar_year = datetime.date.today().year - 1
 
 
 @click.command()
@@ -16,10 +20,16 @@ from irpf_report.reports import AssetsReport
 @click.option(
     "-p",
     "--previous",
-    "previous",
     type=click.Path(exists=True, dir_okay=False, readable=True, path_type=pathlib.Path),
     required=False,
     help="Path to the B3 positions report for the previous year",
+)
+@click.option(
+    "-t",
+    "--transactions",
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=pathlib.Path),
+    required=False,
+    help="Path to the B3 transactions report for the current year",
 )
 @click.option(
     "-o",
@@ -29,17 +39,37 @@ from irpf_report.reports import AssetsReport
     show_default=True,
     help="Path to th generated report",
 )
-def main(current: pathlib.Path, output: pathlib.Path, previous: pathlib.Path | None = None) -> None:
+@click.option(
+    "-y",
+    "--year",
+    default=last_calendar_year,
+    type=int,
+    show_default=True,
+    help="Set the target IRPF report year",
+)
+def main(
+    current: pathlib.Path,
+    output: pathlib.Path,
+    year: int,
+    previous: pathlib.Path | None = None,
+    transactions: pathlib.Path | None = None,
+) -> None:
     """Generates IRPF report spreadsheets from the B3 positions reports"""
-    parser = PositionReportParser(current)
+    parser: ExcelParser = PositionReportParser(current)
     current_positions = parser.parse_report()
 
-    previous_positions = None
+    inventory = Inventory()
+    inventory.add_current_positions(current_positions)
+
     if previous is not None:
         parser = PositionReportParser(previous)
         previous_positions = parser.parse_report()
+        inventory.add_previous_positions(previous_positions)
 
-    inventory = Inventory(current_positions, previous_positions)
+    if transactions is not None:
+        parser = TransactionsReportParser(transactions)
+        transactions_list = parser.parse_report()
+        inventory.add_transactions(transactions_list)
 
-    report = AssetsReport(output)
+    report = IRPFReport(output, year)
     report.generate_report(inventory.get_investments())

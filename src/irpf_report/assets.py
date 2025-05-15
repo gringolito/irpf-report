@@ -1,7 +1,9 @@
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date
+
 from irpf_report.asset_types import StockType
+from irpf_report.utils import format_date
 
 
 @dataclass
@@ -38,8 +40,17 @@ class Asset(metaclass=ABCMeta):
     def get_cnpj(self) -> str:
         return "N/A"
 
-    def get_ticker(self) -> str:
-        return ""
+    def get_ticker(self) -> str | None:
+        return None
+
+    def get_maturity_date(self) -> str | None:
+        return None
+
+    def get_issuer(self) -> str | None:
+        return None
+
+    def has_matured(self, current_year: int) -> bool:
+        return False
 
 
 @dataclass
@@ -159,16 +170,25 @@ class FixedIncome(Asset):
     A fixed income asset representation with its essential information.
 
     Attributes:
-        maturity_date (datetime): When the title/bond matures
+        maturity_date (date): When the title/bond matures
         issuer (str | None): Institution that issued the title/bond (defaults to: None)
     """
 
-    maturity_date: datetime
+    maturity_date: date
     issuer: str | None = field(default=None)
 
     @property
     def key(self) -> str:
         return f"{self.name} - {self.broker}"
+
+    def get_maturity_date(self) -> str:
+        return format_date(self.maturity_date)
+
+    def has_matured(self, current_year: int) -> bool:
+        return self.maturity_date < date(current_year, 12, 31)
+
+    def get_issuer(self) -> str | None:
+        return self.issuer
 
 
 class CDB(FixedIncome):
@@ -179,7 +199,7 @@ class CDB(FixedIncome):
         return 2
 
     def get_description_fmt(self) -> str:
-        return f"%d CDBs emitidos pelo banco {self.issuer}, com vencimento em {self.maturity_date}, sob custódia da corretora {self.broker}"
+        return f"%d CDBs emitidos pelo banco {self.issuer}, com vencimento em {format_date(self.maturity_date)}, sob custódia da corretora {self.broker}"
 
 
 class LCI(FixedIncome):
@@ -190,7 +210,7 @@ class LCI(FixedIncome):
         return 3
 
     def get_description_fmt(self) -> str:
-        return f"%d LCIs emitidas pelo banco {self.issuer}, com vencimento em {self.maturity_date}, sob custódia da corretora {self.broker}"
+        return f"%d LCIs emitidas pelo banco {self.issuer}, com vencimento em {format_date(self.maturity_date)}, sob custódia da corretora {self.broker}"
 
 
 class LCA(FixedIncome):
@@ -201,7 +221,7 @@ class LCA(FixedIncome):
         return 3
 
     def get_description_fmt(self) -> str:
-        return f"%d LCAs emitidas pelo banco {self.issuer}, com vencimento em {self.maturity_date}, sob custódia da corretora {self.broker}"
+        return f"%d LCAs emitidas pelo banco {self.issuer}, com vencimento em {format_date(self.maturity_date)}, sob custódia da corretora {self.broker}"
 
 
 class Treasury(FixedIncome):
@@ -212,7 +232,7 @@ class Treasury(FixedIncome):
         return 2
 
     def get_description_fmt(self) -> str:
-        return f"%s títulos do {self.name}, com vencimento em {self.maturity_date}, sob custódia da corretora {self.broker}"
+        return f"%s títulos do {self.name}, com vencimento em {format_date(self.maturity_date)}, sob custódia da corretora {self.broker}"
 
 
 # LC - Group 4 - Code 2

@@ -4,9 +4,14 @@ Provides functionality to parse different types of investments including stocks,
 BDRs, fixed income, treasury bonds, investment funds and stock loans.
 """
 
+from abc import ABCMeta, abstractmethod
+from collections.abc import Iterable
+from datetime import datetime
 from decimal import Decimal
+import logging
 import pandas
 import pathlib
+from typing import Any
 import warnings
 
 from irpf_report.assets import (
@@ -23,14 +28,16 @@ from irpf_report.assets import (
     LCA,
     Treasury,
 )
-from irpf_report.investments import Position
 from irpf_report.asset_types import StockType
+from irpf_report.investments import Position, Transaction, Operation
 
 
-class ExcelParser:
+class ExcelParser(metaclass=ABCMeta):
     """
     A parser for investment Excel files with multiple sheets containing financial positions.
     """
+
+    required_sheets: Iterable[str | int] = set()
 
     def __init__(self, file_path: pathlib.Path) -> None:
         """
@@ -38,11 +45,111 @@ class ExcelParser:
             file_path (str): The file path to the excel spreadsheet to parse
         """
         self.path = file_path
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate the workbook to ensure all required sheets are present."""
+        missing_sheets = set(self.required_sheets) - set(self.get_available_sheets())
+        if missing_sheets:
+            raise ValueError(f"Missing required sheet(s): {missing_sheets}")
 
     def get_available_sheets(self) -> list[int | str]:
         """Returns a list of available sheet names in the Excel file."""
-        with pandas.ExcelFile(self.path, engine="openpyxl") as xls:
-            return xls.sheet_names
+        with warnings.catch_warnings():
+            # Ignore workbook missing stylesheet warnings until the openpyxl team solves the issue
+            warnings.simplefilter("ignore")
+            with pandas.ExcelFile(self.path, engine="openpyxl") as xls:
+                return xls.sheet_names
+
+    def read_sheet(self, sheet_name) -> pandas.DataFrame:
+        with warnings.catch_warnings():
+            # Ignore workbook missing stylesheet warnings until the openpyxl team solves the issue
+            warnings.simplefilter("ignore")
+            return pandas.read_excel(self.path, sheet_name=sheet_name, parse_dates=True, engine="openpyxl")
+
+    @abstractmethod
+    def parse_report(self) -> list[Any]:
+        """Parse the report from the Excel file.
+
+        Iterates through each sheet in the Excel file and uses the appropriate
+        parser to extract the objects.
+
+        Returns:
+            List[Any]: A list of parsed objects from the Excel file
+        """
+        pass
+
+
+class SheetParser(metaclass=ABCMeta):
+    """
+    Base class for parsing individual Excel sheets containing investment positions.
+    Provides validation and common parsing functionality for all sheet types.
+    """
+
+    DATA_VALID_COLUMN: str | None = None
+
+    def __init__(self, sheet: pandas.DataFrame) -> None:
+        """
+        Args:
+            sheet (pandas.DataFrame): The sheet dataframe to parse
+        """
+        self.sheet = sheet
+        self.required_columns: set[str] = set()
+        for attr in dir(self):
+            if attr.startswith("COL_"):
+                self.required_columns.add(self.__getattribute__(attr))
+
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate the sheet to ensure all required columns are present."""
+        missing_columns = self.required_columns - set(self.sheet.columns)
+        if missing_columns:
+            raise ValueError(f"Missing required column(s): {missing_columns}")
+
+    def parse_sheet(self) -> list[Any]:
+        """
+        Parse a sheet of items.
+
+        Returns:
+            List[Any]: List of parsed items
+        """
+        items = list()
+
+        for _, row in self.sheet.iterrows():
+            if not self.is_valid(row):
+                # End of valid entries, just stop processing
+                break
+
+            try:
+                items.append(self.parse_row(row))
+            except Exception as e:
+                logging.error(f"Error parsing row: {row}")
+                raise e
+
+        return items
+
+    def is_valid(self, row: pandas.Series) -> bool:
+        if self.DATA_VALID_COLUMN is None:
+            return True
+        return not pandas.isna(row[self.DATA_VALID_COLUMN])
+
+    @abstractmethod
+    def parse_row(self, row: pandas.Series) -> Any:
+        """Parse a single row into a object.
+
+        Args:
+            row (pandas.Series): A row from the sheet
+
+        Returns:
+            Any: The parsed object
+        """
+        pass
+
+
+################################################################################################################
+## B3 positions report parsers
+################################################################################################################
 
 
 class PositionReportParser(ExcelParser):
@@ -61,6 +168,19 @@ class PositionReportParser(ExcelParser):
     - Treasury Bonds: Handled by TreasuriesParser
     """
 
+    def __init__(self, file_path) -> None:
+        super().__init__(file_path)
+
+        self.sheet_parsers: dict[str, type[PositionReportSheetParser]] = {
+            "Acoes": StocksParser,
+            "BDR": BDRParser,
+            "Empréstimos": LoanParser,
+            "Fundo de Investimento": FundsParser,
+            "Renda Fixa": FixedIncomeParser,
+            "Tesouro Direto": TreasuriesParser,
+        }
+        self.required_sheets = self.sheet_parsers.keys()
+
     def parse_report(self) -> list[Position]:
         """Parse the position report Excel file.
 
@@ -70,96 +190,20 @@ class PositionReportParser(ExcelParser):
         Returns:
             List[Position]: A list of parsed positions from all sheets
         """
-        parsers: dict[str, type[SheetParser]] = {
-            "Acoes": StocksParser,
-            "BDR": BDRParser,
-            "Empréstimos": LoanParser,
-            "Fundo de Investimento": FundsParser,
-            "Renda Fixa": FixedIncomeParser,
-            "Tesouro Direto": TreasuriesParser,
-        }
-
         positions: list[Position] = list()
-        for name, parser_cls in parsers.items():
-            with warnings.catch_warnings():
-                # Ignore workbook missing stylesheet warnings until the openpyxl team solves the issue
-                warnings.simplefilter("ignore")
-                sheet = pandas.read_excel(self.path, sheet_name=name, parse_dates=True, engine="openpyxl")
+        for sheet_name, parser_cls in self.sheet_parsers.items():
+            sheet = self.read_sheet(sheet_name)
             parser = parser_cls(sheet)
             positions.extend(parser.parse_sheet())
 
         return positions
 
 
-class SheetParser:
-    """
-    Base class for parsing individual Excel sheets containing investment positions.
-    Provides validation and common parsing functionality for all sheet types.
-    """
-
-    def __init__(self, sheet: pandas.DataFrame):
-        """
-        Args:
-            sheet (pandas.DataFrame): The sheet dataframe to parse
-        """
-        self.sheet = sheet
-        self.required_columns = list()
-        for attr in dir(self):
-            if attr.startswith("COL_"):
-                self.required_columns.append(self.__getattribute__(attr))
-
-        self.validate()
-
-    def validate(self) -> None:
-        """Validate the sheet to ensure all required columns are present."""
-        missing_columns = set(self.required_columns) - set(self.sheet.columns)
-        if missing_columns:
-            raise ValueError(f"Missing required columns: {missing_columns}")
-
-    def parse_sheet(self) -> list[Position]:
-        """
-        Parse a sheet holdings.
-
-        Returns:
-            List[Position]: List of parsed holdings
-        """
-        positions = list()
-
-        for _, row in self.sheet.iterrows():
-            if not self.is_valid(row):
-                # End of valid entries, just stop processing
-                break
-
-            try:
-                positions.append(self.parse_position(row))
-            except Exception as e:
-                print(f"Error parsing row: {row}")
-                raise e
-
-        return positions
-
-    def is_valid(self, row: pandas.Series) -> bool:
-        raise NotImplementedError(f"This method should be implemented on the derived class: {self.__class__}")
-
-    def parse_position(self, row: pandas.Series) -> Position:
-        """Parse a single row into a Position object.
-
-        Args:
-            row (pandas.Series): A row from the sheet
-
-        Returns:
-            Position: The parsed position object
-        """
-        raise NotImplementedError(f"This method should be implemented on the derived class: {self.__class__}")
-
-
 class PositionReportSheetParser(SheetParser):
     COL_NAME = "Produto"
     COL_BROKER = "Instituição"
     COL_QUANTITY = "Quantidade"
-
-    def is_valid(self, row: pandas.Series) -> bool:
-        return not pandas.isna(row[self.COL_NAME])
+    DATA_VALID_COLUMN = COL_NAME
 
 
 class FixedIncomeParser(PositionReportSheetParser):
@@ -188,7 +232,7 @@ class FixedIncomeParser(PositionReportSheetParser):
         type_str = name.split("-", 1)[0].strip().lower()
         return types_mapping[type_str]
 
-    def parse_position(self, row: pandas.Series) -> Position:
+    def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
 
         Args:
@@ -202,7 +246,7 @@ class FixedIncomeParser(PositionReportSheetParser):
             name=str(row[self.COL_NAME]).strip(),
             broker=str(row[self.COL_BROKER]).strip(),
             issuer=str(row[self.COL_ISSUER]).strip().upper(),
-            maturity_date=row[self.COL_MATURITY_DATE],
+            maturity_date=datetime.strptime(str(row[self.COL_MATURITY_DATE]).strip(), "%d/%m/%Y").date(),
         )
         quantity = Decimal(str(row[self.COL_QUANTITY]))
         return Position(asset=asset, quantity=quantity)
@@ -214,7 +258,7 @@ class TreasuriesParser(PositionReportSheetParser):
     COL_MATURITY_DATE = "Vencimento"
     COL_INVESTED_AMOUNT = "Valor Aplicado"
 
-    def parse_position(self, row: pandas.Series) -> Position:
+    def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
 
         Args:
@@ -226,7 +270,7 @@ class TreasuriesParser(PositionReportSheetParser):
         asset = Treasury(
             name=str(row[self.COL_NAME]).strip(),
             broker=str(row[self.COL_BROKER]).strip(),
-            maturity_date=row[self.COL_MATURITY_DATE],
+            maturity_date=datetime.strptime(str(row[self.COL_MATURITY_DATE]).strip(), "%d/%m/%Y").date(),
         )
         quantity = Decimal(str(row[self.COL_QUANTITY]))
         invested_amount = Decimal(str(row[self.COL_INVESTED_AMOUNT]))
@@ -260,7 +304,7 @@ class StocksParser(StockExchangeListedParser):
         """
         return StockType[type_str]
 
-    def parse_position(self, row: pandas.Series) -> Position:
+    def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
 
         Args:
@@ -303,7 +347,7 @@ class FundsParser(StockExchangeListedParser):
         }
         return types_mapping[type_str.lower()]
 
-    def parse_position(self, row: pandas.Series) -> Position:
+    def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
 
         Args:
@@ -328,7 +372,7 @@ class BDRParser(PositionReportSheetParser):
 
     COL_TICKER = "Código de Negociação"
 
-    def parse_position(self, row: pandas.Series) -> Position:
+    def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
 
         Args:
@@ -388,7 +432,7 @@ class LoanParser(PositionReportSheetParser):
             return StockType.PN
         return None
 
-    def parse_position(self, row: pandas.Series) -> Position:
+    def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
 
         Args:
@@ -408,3 +452,67 @@ class LoanParser(PositionReportSheetParser):
         )
         quantity = Decimal(str(row[self.COL_QUANTITY]))
         return Position(asset=asset, quantity=quantity)
+
+
+################################################################################################################
+## B3 transactions report parsers
+################################################################################################################
+
+
+class TransactionsReportParser(ExcelParser):
+    sheet_name = "Negociação"
+    required_sheets = set([sheet_name])
+
+    def parse_report(self) -> list[Transaction]:
+        sheet = self.read_sheet(self.sheet_name)
+        parser = TransactionsSheetParser(sheet)
+        return parser.parse_sheet()
+
+
+class TransactionsSheetParser(SheetParser):
+    """
+    Parser for transactions sheets.
+    """
+
+    COL_DATE = "Data do Negócio"
+    COL_OPERATION = "Tipo de Movimentação"
+    COL_BROKER = "Instituição"
+    COL_TICKER = "Código de Negociação"
+    COL_QUANTITY = "Quantidade"
+    COL_PRICE = "Preço"
+    COL_TOTAL_AMOUNT = "Valor"
+
+    @staticmethod
+    def parse_operation(operation: str) -> Operation:
+        operation_mapping = {
+            "compra": Operation.BUY,
+            "venda": Operation.SELL,
+        }
+        return operation_mapping[operation.lower()]
+
+    @staticmethod
+    def parse_ticker(ticker: str) -> str:
+        if ticker.endswith("F"):
+            return ticker[:-1]
+        return ticker
+
+    def parse_row(self, row: pandas.Series) -> Transaction:
+        """Parse a single row into a Transaction object.
+
+        Args:
+            row (pandas.Series): A row from the sheet
+
+        Returns:
+            Transaction: The parsed transaction object
+        """
+        operation = self.parse_operation(str(row[self.COL_OPERATION]).strip())
+        ticker = self.parse_ticker(str(row[self.COL_TICKER]).strip())
+        return Transaction(
+            date=datetime.strptime(str(row[self.COL_DATE]).strip(), "%d/%m/%Y").date(),
+            operation=operation,
+            broker=str(row[self.COL_BROKER]).strip(),
+            ticker=ticker,
+            quantity=int(row[self.COL_QUANTITY]),
+            price=Decimal(str(row[self.COL_PRICE])),
+            total_amount=Decimal(str(row[self.COL_TOTAL_AMOUNT])),
+        )

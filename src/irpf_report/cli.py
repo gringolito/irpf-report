@@ -42,4 +42,4 @@ def main(current: pathlib.Path, output: pathlib.Path, previous: pathlib.Path | N
     inventory = Inventory(current_positions, previous_positions)
 
     report = AssetsReport(output)
-    report.generate_report(inventory.get_holdings())
+    report.generate_report(inventory.get_investments())

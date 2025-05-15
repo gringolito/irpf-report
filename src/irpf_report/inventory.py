@@ -1,8 +1,8 @@
-from irpf_report.holdings import Position, Holding
+from irpf_report.investments import Position, Investment
 
 
 class Inventory:
-    holdings: dict[str, Holding]
+    investments: dict[str, Investment]
 
     def __init__(
         self,
@@ -12,23 +12,24 @@ class Inventory:
         if previous_positions is None:
             previous_positions = list()
 
-        self.holdings = self._init_holdings(current_positions, previous_positions)
+        self.investments = self._init_investments(current_positions, previous_positions)
 
-    def _init_holdings(self, current: list[Position], previous: list[Position]) -> dict[str, Holding]:
-        holdings: dict[str, Holding] = dict()
+    @staticmethod
+    def _init_investments(current: list[Position], previous: list[Position]) -> dict[str, Investment]:
+        investments: dict[str, Investment] = dict()
         for position in current:
-            if position.asset.key not in holdings:
-                holdings[position.asset.key] = Holding(asset=position.asset)
+            if position.asset.key not in investments:
+                investments[position.asset.key] = Investment(asset=position.asset)
 
-            holdings[position.asset.key].add_current(position)
+            investments[position.asset.key].add_current(position)
 
         for position in previous:
-            if position.asset.key not in holdings:
-                holdings[position.asset.key] = Holding(asset=position.asset)
+            if position.asset.key not in investments:
+                investments[position.asset.key] = Investment(asset=position.asset)
 
-            holdings[position.asset.key].add_previous(position)
+            investments[position.asset.key].add_previous(position)
 
-        return holdings
+        return investments
 
-    def get_holdings(self) -> list[Holding]:
-        return list(self.holdings.values())
+    def get_investments(self) -> list[Investment]:
+        return list(self.investments.values())

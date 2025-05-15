@@ -20,7 +20,7 @@ class Position:
 
 
 @dataclass
-class Holding:
+class Investment:
     """
     An asset investment holding representation with its essential information.
 

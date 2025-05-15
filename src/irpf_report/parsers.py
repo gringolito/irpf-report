@@ -23,7 +23,7 @@ from irpf_report.assets import (
     LCA,
     Treasury,
 )
-from irpf_report.holdings import Position
+from irpf_report.investments import Position
 from irpf_report.asset_types import StockType
 
 

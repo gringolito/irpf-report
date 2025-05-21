@@ -15,9 +15,13 @@ from typing import Any
 import warnings
 
 from irpf_report.assets import (
+    Asset,
     StockExchangeListed,
     FixedIncome,
     Stock,
+    ON,
+    PN,
+    UNIT,
     FII,
     FIDC,
     ETF,
@@ -28,8 +32,8 @@ from irpf_report.assets import (
     LCA,
     Treasury,
 )
-from irpf_report.asset_types import StockType
 from irpf_report.investments import Position, Transaction, Operation
+from irpf_report.utils import search_asset_type_online
 
 
 class ExcelParser(metaclass=ABCMeta):
@@ -163,23 +167,23 @@ class PositionReportParser(ExcelParser):
     - Stocks (Ações): Handled by StocksParser
     - BDRs: Handled by BDRParser
     - Stock Loans (Empréstimos): Handled by LoanParser
+    - Exchange Traded Funds (ETFs): Handled by ETFParser
     - Investment Funds: Handled by FundsParser
     - Fixed Income: Handled by FixedIncomeParser
     - Treasury Bonds: Handled by TreasuriesParser
     """
 
     def __init__(self, file_path) -> None:
-        super().__init__(file_path)
-
         self.sheet_parsers: dict[str, type[PositionReportSheetParser]] = {
             "Acoes": StocksParser,
             "BDR": BDRParser,
             "Empréstimos": LoanParser,
+            "ETF": ETFParser,
             "Fundo de Investimento": FundsParser,
             "Renda Fixa": FixedIncomeParser,
             "Tesouro Direto": TreasuriesParser,
         }
-        self.required_sheets = self.sheet_parsers.keys()
+        super().__init__(file_path)
 
     def parse_report(self) -> list[Position]:
         """Parse the position report Excel file.
@@ -191,7 +195,11 @@ class PositionReportParser(ExcelParser):
             List[Position]: A list of parsed positions from all sheets
         """
         positions: list[Position] = list()
+        sheets = self.get_available_sheets()
         for sheet_name, parser_cls in self.sheet_parsers.items():
+            if sheet_name not in sheets:
+                logging.debug("Sheet %s is not available on the report. Skipping...", sheet_name)
+                continue
             sheet = self.read_sheet(sheet_name)
             parser = parser_cls(sheet)
             positions.extend(parser.parse_sheet())
@@ -293,7 +301,7 @@ class StocksParser(StockExchangeListedParser):
     COL_CNPJ = "CNPJ da Empresa"
 
     @staticmethod
-    def parse_type(type_str: str) -> StockType:
+    def get_asset_class(type_str: str) -> type[Stock]:
         """Convert the stock type string to its corresponding enum value.
 
         Args:
@@ -302,7 +310,12 @@ class StocksParser(StockExchangeListedParser):
         Returns:
             StockType: The corresponding stock type enum
         """
-        return StockType[type_str]
+        types_mapping = {
+            "on": ON,
+            "pn": PN,
+            "unit": UNIT,
+        }
+        return types_mapping[type_str.lower()]
 
     def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
@@ -313,13 +326,12 @@ class StocksParser(StockExchangeListedParser):
         Returns:
             Position: The parsed position object
         """
-        stock_type = self.parse_type(str(row[self.COL_TYPE]))
-        asset = Stock(
+        stock_class = self.get_asset_class(str(row[self.COL_TYPE]))
+        asset = stock_class(
             name=str(row[self.COL_NAME]).strip(),
             broker=str(row[self.COL_BROKER]).strip(),
             ticker=str(row[self.COL_TICKER]).strip(),
             cnpj=str(int(row[self.COL_CNPJ])).strip().zfill(14),
-            type=stock_type,
         )
         quantity = Decimal(str(row[self.COL_QUANTITY]))
         return Position(asset=asset, quantity=quantity)
@@ -365,6 +377,12 @@ class FundsParser(StockExchangeListedParser):
         )
         quantity = Decimal(str(row[self.COL_QUANTITY]))
         return Position(asset=asset, quantity=quantity)
+
+
+class ETFParser(FundsParser):
+    @staticmethod
+    def get_asset_class(type_str: str) -> type[StockExchangeListed]:
+        return ETF
 
 
 class BDRParser(PositionReportSheetParser):
@@ -418,19 +436,23 @@ class LoanParser(PositionReportSheetParser):
         """
         if ticker.endswith("34"):
             return BDR
-        if ticker.endswith("3") or ticker.endswith("4"):
-            return Stock
-        return StockExchangeListed
-
-    @staticmethod
-    def parse_stock_type(ticker: str) -> StockType | None:
-        if ticker.endswith("34"):
-            return None
         if ticker.endswith("3"):
-            return StockType.ON
+            return ON
         if ticker.endswith("4"):
-            return StockType.PN
-        return None
+            return PN
+        if ticker.endswith("11"):
+            asset_type = search_asset_type_online(ticker)
+            if asset_type == None:
+                raise RuntimeError("Could not determine the asset class", ticker)
+
+            if asset_type == "Stock":
+                return UNIT
+            if asset_type == "ETF":
+                return ETF
+            if asset_type == "Fund":
+                return FII
+
+        raise RuntimeError("Could not determine the asset class", ticker)
 
     def parse_row(self, row: pandas.Series) -> Position:
         """Parse a single row into a Position object.
@@ -443,12 +465,10 @@ class LoanParser(PositionReportSheetParser):
         """
         ticker = self.parse_ticker(str(row[self.COL_NAME]).strip())
         asset_class = self.get_asset_class(ticker)
-        stock_type = self.parse_stock_type(ticker)
         asset = asset_class(
             name=str(row[self.COL_NAME]).strip(),
             broker=str(row[self.COL_BROKER]).strip(),
             ticker=ticker,
-            type=stock_type,
         )
         quantity = Decimal(str(row[self.COL_QUANTITY]))
         return Position(asset=asset, quantity=quantity)
@@ -516,3 +536,91 @@ class TransactionsSheetParser(SheetParser):
             price=Decimal(str(row[self.COL_PRICE])),
             total_amount=Decimal(str(row[self.COL_TOTAL_AMOUNT])),
         )
+
+
+################################################################################################################
+## Last year inventory report parsers
+################################################################################################################
+
+
+class IRPFReportParser(ExcelParser):
+    sheet_name = "Inventário"
+    required_sheets = set([sheet_name])
+
+    def __init__(self, file_path: pathlib.Path, last_year: int) -> None:
+        self.last_year = last_year
+        super().__init__(file_path)
+
+    def parse_report(self) -> list[Position]:
+        sheet = self.read_sheet(self.sheet_name)
+        parser = InventorySheetParser(sheet, self.last_year)
+        return parser.parse_sheet()
+
+
+class InventorySheetParser(SheetParser):
+    """
+    Parser for inventory sheets.
+    """
+
+    COL_NAME = "Nome"
+    COL_BROKER = "Instituição"
+    COL_TYPE = "Tipo"
+    COL_CNPJ = "CNPJ"
+    COL_TICKER = "Código de Negociação"
+    COL_MATURITY_DATE = "Data de Vencimento"
+    COL_ISSUER = "Emissor"
+    COL_QUANTITY = "Quantidade"
+
+    def __init__(self, sheet: pandas.DataFrame, last_year: int) -> None:
+        self.last_year = last_year
+        self.COL_INVESTED_AMOUNT = f"Situação em {last_year}"
+        super().__init__(sheet)
+
+    @staticmethod
+    def get_asset_class(asset_type: str) -> type[Asset]:
+        types_mapping: dict[str, type[Asset]] = {
+            "on": ON,
+            "pn": PN,
+            "unit": UNIT,
+            "etf": ETF,
+            "bdr": BDR,
+            "fii": FII,
+            "fiireceipt": FIIReceipt,
+            "fidc": FIDC,
+            "cdb": CDB,
+            "lci": LCI,
+            "lca": LCA,
+            "treasury": Treasury,
+        }
+        return types_mapping[asset_type.lower()]
+
+    def get_asset(self, row: pandas.Series) -> Asset:
+        asset_class = self.get_asset_class(str(row[self.COL_TYPE]))
+        maturity_date = (
+            datetime.strptime(str(row[self.COL_MATURITY_DATE]).strip(), "%d/%m/%Y").date()
+            if not pandas.isna(row[self.COL_MATURITY_DATE])
+            else None
+        )
+        parameters = {
+            "name": str(row[self.COL_NAME]).strip(),
+            "broker": str(row[self.COL_BROKER]).strip(),
+            "cnpj": str(row[self.COL_CNPJ]).strip(),
+            "ticker": str(row[self.COL_TICKER]).strip(),
+            "maturity_date": maturity_date,
+            "issuer": str(row[self.COL_ISSUER]).strip(),
+        }
+        return asset_class.from_dict(parameters)
+
+    def parse_row(self, row: pandas.Series) -> Position:
+        """Parse a single row into a Position object.
+
+        Args:
+            row (pandas.Series): A row from the sheet
+
+        Returns:
+            Position: The parsed position object
+        """
+        asset = self.get_asset(row)
+        quantity = Decimal(str(row[self.COL_QUANTITY]))
+        invested_amount = Decimal(str(row[self.COL_INVESTED_AMOUNT]))
+        return Position(asset=asset, quantity=quantity, invested_amount=invested_amount)

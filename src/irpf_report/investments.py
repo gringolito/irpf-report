@@ -68,6 +68,8 @@ class Investment:
     def add_previous_position(self, position: Position) -> None:
         self.previous_quantity += position.quantity
         self.previous_invested_amount += position.invested_amount
+        if self.asset.is_listed():
+            self.current_invested_amount += position.invested_amount
 
     def add_transaction(self, transaction: Transaction) -> None:
         if transaction.operation == Operation.BUY:
@@ -90,9 +92,11 @@ class Investment:
 
     @property
     def result(self) -> Decimal:
-        return self.previous_invested_amount + self.transactions_balance_amount
+        return (self.previous_invested_amount + self.transactions_balance_amount).copy_negate()
 
     def has_missing_transactions(self) -> bool:
+        if not self.asset.is_listed():
+            return False
         return self.previous_quantity + self.transactions_balance_quantity != self.current_quantity
 
     def repeat_amount(self) -> bool:

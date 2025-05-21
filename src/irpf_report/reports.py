@@ -1,6 +1,6 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
-from datetime import date
+from decimal import Decimal
 from openpyxl.styles import Alignment, Font  # type: ignore[attr-defined]
 from openpyxl.worksheet.worksheet import Worksheet
 import pandas
@@ -80,18 +80,19 @@ class AssetsSheetWriter(SheetWriter):
         super().__init__(xls, current_year)
         self.previous_year = current_year - 1
 
-    def _format_data_to_excel(self, investment: Investment) -> dict[str, Any]:
-        asset = investment.asset
+    def _format_data_to_excel(self, item: Investment) -> dict[str, Any]:
+        asset = item.asset
+        current_invested_amount = item.current_invested_amount if not item.is_closed() else Decimal(0)
         return {
             "Grupo": asset.get_group(),
             "Código": asset.get_code(),
             "CNPJ": asset.get_cnpj(),
-            "Descrição": self._format_investment_description(investment),
+            "Descrição": self._format_investment_description(item),
             "Código de Negociação": asset.get_ticker(),
-            f"Situação em {self.previous_year}": float(investment.previous_invested_amount),
-            f"Situação em {self.current_year}": float(investment.current_invested_amount),
-            "Repetir valor": "Repetir" if investment.repeat_amount() else "",
-            "Observações": self._format_investment_notes(investment),
+            f"Situação em {self.previous_year}": float(item.previous_invested_amount),
+            f"Situação em {self.current_year}": float(current_invested_amount),
+            "Repetir valor": "Repetir" if item.repeat_amount() else "",
+            "Observações": self._format_investment_notes(item),
         }
 
     def _set_sheet_style(self, sheet: Worksheet) -> None:
@@ -106,9 +107,8 @@ class AssetsSheetWriter(SheetWriter):
         if investment.is_closed() and not asset.has_matured(self.current_year):
             closed_date = investment.latest_sell_date
             result = investment.result
-            loss_or_profit = "lucro" if result > 0 else "prejuízo"
-            if result < 0:
-                result *= -1
+            loss_or_profit = "lucro" if result >= 0 else "prejuízo"
+            result = abs(result)
             description += f" - Posição encerrada em {format_date(closed_date)} com {loss_or_profit} de R$ {result:.2f}"
 
         return description
@@ -125,10 +125,10 @@ class AssetsSheetWriter(SheetWriter):
     def _set_column_dimensions(self, sheet: Worksheet) -> None:
         offsets = {
             "CNPJ": 1,
-            "Descrição": -32,
-            "Código de Negociação": 6,
-            f"Situação em {self.previous_year}": 6,
-            f"Situação em {self.current_year}": 6,
+            "Descrição": -24,
+            "Código de Negociação": 8,
+            f"Situação em {self.previous_year}": 8,
+            f"Situação em {self.current_year}": 8,
             "Repetir valor": 2,
         }
         for header, offset in offsets.items():
@@ -169,11 +169,11 @@ class AssetsSheetWriter(SheetWriter):
 
 
 class InventorySheetWriter(SheetWriter):
-    def _filter_data(self, investment: Investment) -> bool:
-        return not investment.is_closed()
+    def _filter_data(self, item: Investment) -> bool:
+        return not item.is_closed()
 
-    def _format_data_to_excel(self, investment: Investment) -> dict[str, Any]:
-        asset = investment.asset
+    def _format_data_to_excel(self, item: Investment) -> dict[str, Any]:
+        asset = item.asset
         return {
             "Nome": asset.name,
             "Instituição": asset.broker,
@@ -182,8 +182,8 @@ class InventorySheetWriter(SheetWriter):
             "Código de Negociação": asset.get_ticker(),
             "Data de Vencimento": asset.get_maturity_date(),
             "Emissor": asset.get_issuer(),
-            "Quantidade": float(investment.current_quantity),
-            f"Situação em {self.current_year}": float(investment.current_invested_amount),
+            "Quantidade": float(item.current_quantity),
+            f"Situação em {self.current_year}": float(item.current_invested_amount),
         }
 
     def _set_sheet_style(self, sheet: Worksheet) -> None:
@@ -193,14 +193,14 @@ class InventorySheetWriter(SheetWriter):
 
     def _set_column_dimensions(self, sheet: Worksheet) -> None:
         offsets = {
-            "Nome": -6,
-            "Instituição": -2,
+            "Nome": 2,
+            "Instituição": 2,
             "Tipo": 1,
             "CNPJ": 1,
-            "Código de Negociação": 6,
-            "Data de Vencimento": 2,
-            "Emissor": 0,
-            "Quantidade": 6,
+            "Código de Negociação": 8,
+            "Data de Vencimento": 4,
+            "Emissor": 2,
+            "Quantidade": 8,
             f"Situação em {self.current_year}": 6,
         }
         for header, offset in offsets.items():

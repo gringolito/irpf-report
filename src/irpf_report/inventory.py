@@ -12,6 +12,8 @@ class Inventory:
         for position in current:
             if position.asset.key not in self.investments:
                 self.investments[position.asset.key] = Investment(asset=position.asset)
+            else:
+                self.investments[position.asset.key].asset.update_cnpj(position.asset.get_cnpj())
 
             self.investments[position.asset.key].add_current_position(position)
 
@@ -19,6 +21,8 @@ class Inventory:
         for position in previous:
             if position.asset.key not in self.investments:
                 self.investments[position.asset.key] = Investment(asset=position.asset)
+            else:
+                self.investments[position.asset.key].asset.update_cnpj(position.asset.get_cnpj())
 
             self.investments[position.asset.key].add_previous_position(position)
 

@@ -1,26 +1,34 @@
 from abc import ABCMeta, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import date
+from typing import Self
 
-from irpf_report.asset_types import StockType
 from irpf_report.utils import format_date
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Asset(metaclass=ABCMeta):
     """Base class for all investment assets.
 
     Attributes:
         name (str): Name of the asset
         broker (str): Name of the broker holding the asset
+        cnpj (str | None): Brazilian company registration number (CNPJ) of the asset
     """
 
     name: str
     broker: str
+    cnpj: str | None = field(default=None)
 
     @property
     def key(self) -> str:
         return self.name
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        field_names = [f.name for f in fields(cls)]
+        filtered_data = {key: value for key, value in data.items() if key in field_names}
+        return cls(**filtered_data)
 
     @abstractmethod
     def get_group(self) -> int:
@@ -38,7 +46,22 @@ class Asset(metaclass=ABCMeta):
         return str(self.__class__.__name__)
 
     def get_cnpj(self) -> str:
-        return "N/A"
+        if self.cnpj is None:
+            return "Desconhecido"
+        if len(self.cnpj) != 14:
+            return self.cnpj
+        return "{}.{}.{}/{}-{}".format(
+            self.cnpj[:2],
+            self.cnpj[2:5],
+            self.cnpj[5:8],
+            self.cnpj[8:12],
+            self.cnpj[12:],
+        )
+
+    def update_cnpj(self, cnpj: str) -> None:
+        if self.cnpj is not None:
+            return
+        self.cnpj = cnpj
 
     def get_ticker(self) -> str | None:
         return None
@@ -52,6 +75,9 @@ class Asset(metaclass=ABCMeta):
     def has_matured(self, current_year: int) -> bool:
         return False
 
+    def is_listed(self) -> bool:
+        return False
+
 
 @dataclass
 class StockExchangeListed(Asset):
@@ -60,24 +86,13 @@ class StockExchangeListed(Asset):
 
     Attributes:
         ticker (str): Trading symbol/ticker of the asset
-        type (StockExchangeAssetType): Type of the asset
-        cnpj (str): Brazilian company registration number (CNPJ) of the asset
     """
 
     ticker: str
-    cnpj: str | None = field(default=None)
-    type: StockType | None = field(default=None)
 
     @property
     def key(self) -> str:
         return self.ticker
-
-    def get_cnpj(self) -> str:
-        if self.cnpj is None:
-            return "Desconhecido"
-        if len(self.cnpj) != 14:
-            return self.cnpj
-        return "{}.{}.{}/{}-{}".format(self.cnpj[:2], self.cnpj[2:5], self.cnpj[5:8], self.cnpj[8:12], self.cnpj[12:])
 
     def get_ticker(self) -> str:
         return self.ticker
@@ -85,6 +100,9 @@ class StockExchangeListed(Asset):
     @property
     def asset_name(self) -> str:
         return self.name.split("-", 1)[1].strip()
+
+    def is_listed(self) -> bool:
+        return True
 
 
 class Stock(StockExchangeListed):
@@ -94,19 +112,20 @@ class Stock(StockExchangeListed):
     def get_code(self) -> int:
         return 1
 
+
+class ON(Stock):
     def get_description_fmt(self) -> str:
-        assert self.type, "Missing stock type"
-        type_mapping = {
-            StockType.ON: "ações ON",
-            StockType.PN: "ações PN",
-            StockType.UNIT: "UNITs",
-        }
+        return f"%d ações ON emitidas pela empresa {self.asset_name}"
 
-        return f"%d {type_mapping[self.type]} emitidas pela empresa {self.asset_name}"
 
-    def get_type(self) -> str:
-        assert self.type, "Missing stock type"
-        return self.type.name
+class PN(Stock):
+    def get_description_fmt(self) -> str:
+        return f"%d ações PN emitidas pela empresa {self.asset_name}"
+
+
+class UNIT(Stock):
+    def get_description_fmt(self) -> str:
+        return f"%d UNITs emitidas pela empresa {self.asset_name}"
 
 
 class ETF(StockExchangeListed):
